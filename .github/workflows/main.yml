@@ -50,7 +50,7 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           # This must be the folder your 'npm run build' command outputs to
-          path: './build' 
+          path: './dist' 
 
       # Step 6: Deploys the artifact to GitHub Pages
       - name: Deploy to GitHub Pages
