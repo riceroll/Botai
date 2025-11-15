@@ -1,11 +1,39 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera } from '@react-three/drei';
+import { EffectComposer, N8AO, BrightnessContrast, ToneMapping } from '@react-three/postprocessing';
 import ModelViewer from './ModelViewer';
 import CatmullClarkCube from './CatmullClarkCube';
 import RandomGraphMesh from './RandomGraphMesh';
 import { exportAndUploadGeometry } from './utils/objExporter';
 import './App.css';
+
+// Component to update camera position based on twist
+function CameraController({ twist }) {
+  const { camera } = useThree();
+  
+  useEffect(() => {
+    // Flat (twist = 0): Front view [0, 0, 5]
+    // Botai (twist = 90): Top view [0, 5, 0]
+    // Interpolate between positions based on twist angle
+    const normalizedTwist = Math.abs(twist) / 90; // 0 to 1+ range
+    const factor = Math.min(normalizedTwist, 1); // Clamp to 1
+    
+    if (twist == 90) {
+      // Stay at top view for twist > 90
+      camera.position.set(0, 3, 0);
+    } 
+    if (twist == 0) {
+      // For negative twist, stay at front view
+      camera.position.set(0, 0, 3);
+    }
+    
+    camera.lookAt(0, 0, 0);
+    camera.updateProjectionMatrix();
+  }, [twist, camera]);
+  
+  return null;
+}
 
 // 生成随机 GUID
 const generateGUID = () => {
@@ -16,38 +44,49 @@ const generateGUID = () => {
   });
 };
 
-// 计算价格 - ratio 越偏离 1，价格越高
-const calculatePrice = (ratio) => {
-  const basePrice = 100; // 基础价格 $100
-  const deviation = Math.abs(ratio - 1); // 偏离 1 的程度
-  const priceIncrease = deviation * 50; // 每偏离 1 增加 $50
-  return (basePrice + priceIncrease).toFixed(2);
+// 计算价格 - 基于bounding box体积
+const calculatePrice = (scaleX, scaleY, scaleZ) => {
+  const basePrice = 60; // 基础价格 $60 (对应默认体积 1.0)
+  const volume = scaleX * scaleY * scaleZ; // 计算bounding box体积
+  const price = basePrice * volume; // 价格与体积成正比
+  return price.toFixed(2);
 };
 
 function App() {
+  // Check for debug parameter in URL
+  const [debugMode, setDebugMode] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('debug') === 'true';
+  });
+  
   const [webglSupported, setWebglSupported] = useState(true);
-  const [ratio, setRatio] = useState(1.0); // 默认比例 1:1
+  const [scaleX, setScaleX] = useState(1.0); // X scale
+  const [scaleY, setScaleY] = useState(1.0); // Y scale
+  const [scaleZ, setScaleZ] = useState(1.0); // Z scale
   const [twist, setTwist] = useState(0); // 扭曲角度 (degrees)
-  const [booleanSubtract, setBooleanSubtract] = useState(false); // Boolean subtraction toggle
-  const [subtractText, setSubtractText] = useState('HELLO'); // Text to subtract
+  const [booleanSubtract, setBooleanSubtract] = useState(false); // Inscription toggle
+  const [subtractText, setSubtractText] = useState('Botai.'); // Inscription text
   const [textFont, setTextFont] = useState('helvetiker'); // Font selection
-  const [textScale, setTextScale] = useState(0.3); // Text scale (0.1 to 0.5)
-  const [textSpacing, setTextSpacing] = useState(1.0); // Text spacing multiplier (0.5 to 2.0)
-  const [textOffsetX, setTextOffsetX] = useState(0); // Text X offset (-1.0 to 1.0)
-  const [textOffsetY, setTextOffsetY] = useState(0); // Text Y offset (-1.0 to 1.0)
-  const [textDepth, setTextDepth] = useState(0); // Text depth - Y-axis offset (-1.0 to 1.0)
-  const [textRotation, setTextRotation] = useState(0); // Text rotation in degrees (0 to 360)
-  const [showText, setShowText] = useState(true); // Toggle text visualization
+  const [textScale, setTextScale] = useState(0.09); // Text scale (0.1 to 0.5)
+  const [textSpacing, setTextSpacing] = useState(0.3); // Text spacing multiplier (0.5 to 2.0)
+  const [textOffsetX, setTextOffsetX] = useState(-0.3); // Text X offset (-1.0 to 1.0)
+  const [textOffsetY, setTextOffsetY] = useState(-0.4); // Text Y offset (-1.0 to 1.0)
+  const [textDepth, setTextDepth] = useState(-0.32); // Text depth - Y-axis offset (-1.0 to 1.0)
+  const [textRotation, setTextRotation] = useState(24); // Text rotation in degrees (0 to 360)
+  const [showText, setShowText] = useState(false); // Toggle inscription preview (off by default)
   const [isOrdering, setIsOrdering] = useState(false);
-  const [objFile, setObjFile] = useState(null);
+  const [objFile, setObjFile] = useState('./Morpheus.obj');
   const [email, setEmail] = useState(''); // 用户邮箱
-  const [mode, setMode] = useState('graph'); // 'original', 'manifold', or 'graph'
+  const [mode, setMode] = useState('original'); // 'original', 'manifold', or 'graph'
   const [subdivisionLevel, setSubdivisionLevel] = useState(0);
   const [subdivisionType, setSubdivisionType] = useState('loop'); // 'loop' or 'catmull'
   const [currentGeometry, setCurrentGeometry] = useState(null);
   const [isExporting, setIsExporting] = useState(false);
+  const [useAdvancedRendering, setUseAdvancedRendering] = useState(true); // Advanced rendering toggle
+  const [useN8AO, setUseN8AO] = useState(true); // Enable N8AO ambient occlusion
+  const [useToneMapping, setUseToneMapping] = useState(true); // Enable tone mapping
 
-  const price = calculatePrice(ratio);
+  const price = calculatePrice(scaleX, scaleY, scaleZ);
 
   // 检测浏览器是否支持 WebGL（在 mount 时运行一次）
   useEffect(() => {
@@ -111,7 +150,9 @@ function App() {
       console.log('Creating Order:', {
         guid,
         productName,
-        ratio,
+        scaleX,
+        scaleY,
+        scaleZ,
         price,
         email
       });
@@ -174,126 +215,130 @@ function App() {
     <div className="app-container">
       {/* 左侧控制面板 */}
       <div className="control-panel">
-        <img src="./Botai_Logo.svg" alt="Botai" style={{ width: '120px', marginBottom: '20px' }} />
+        <img src="./Botai_Logo.svg" alt="Botai" style={{ width: '100px', marginBottom: '16px' }} />
         
-        {/* Mode Toggle */}
+        {/* 选择模式按钮 */}
         <div className="control-group">
-          <label style={{ fontSize: '15px', fontWeight: '600' }}>Mode:</label>
-          <div style={{ display: 'flex', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: '13px', fontWeight: '600' }}>Select Mode:</label>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+            {debugMode && (
+              <>
+                <button
+                  type="button"
+                  className="sample-button"
+                  onClick={() => setMode('graph')}
+                  style={{
+                    background: mode === 'graph' ? '#000' : '#f5f5f5',
+                    color: mode === 'graph' ? '#fff' : '#000',
+                    flex: '1 1 45%'
+                  }}
+                >
+                  Random Graph
+                </button>
+                <button
+                  type="button"
+                  className="sample-button"
+                  onClick={() => setMode('manifold')}
+                  style={{
+                    background: mode === 'manifold' ? '#000' : '#f5f5f5',
+                    color: mode === 'manifold' ? '#fff' : '#000',
+                    flex: '1 1 45%'
+                  }}
+                >
+                  Cube
+                </button>
+              </>
+            )}
             <button
               type="button"
               className="sample-button"
-              onClick={() => setMode('graph')}
+              onClick={() => { setObjFile('./bow_tie_small.obj'); setMode('original'); }}
               style={{
-                background: mode === 'graph' ? '#000' : '#f5f5f5',
-                color: mode === 'graph' ? '#fff' : '#000',
+                background: mode === 'original' && objFile === './bow_tie_small.obj' ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile === './bow_tie_small.obj' ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
-              Graph Mesh
+              Bow Tie
             </button>
             <button
               type="button"
               className="sample-button"
-              onClick={() => setMode('manifold')}
+              onClick={() => { setObjFile('./trinity.obj'); setMode('original'); }}
               style={{
-                background: mode === 'manifold' ? '#000' : '#f5f5f5',
-                color: mode === 'manifold' ? '#fff' : '#000',
+                background: mode === 'original' && objFile === './trinity.obj' ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile === './trinity.obj' ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
-              Cube Subdivision
+              Trinity
             </button>
             <button
               type="button"
               className="sample-button"
-              onClick={() => setMode('original')}
+              onClick={() => { setObjFile('./Morpheus.obj'); setMode('original'); }}
               style={{
-                background: mode === 'original' ? '#000' : '#f5f5f5',
-                color: mode === 'original' ? '#fff' : '#000',
+                background: mode === 'original' && objFile === './Morpheus.obj' ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile === './Morpheus.obj' ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
-              Load Model
+              Morpheus
+            </button>
+            <button
+              type="button"
+              className="sample-button"
+              onClick={() => { setObjFile('./Webber Edge.obj'); setMode('original'); }}
+              style={{
+                background: mode === 'original' && objFile === './Webber Edge.obj' ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile === './Webber Edge.obj' ? '#fff' : '#000',
+                flex: '1 1 45%'
+              }}
+            >
+              Webber Edge
             </button>
           </div>
+          {mode === 'original' && objFile && <p className="file-status">✓ {objFile.split('/').pop()}</p>}
         </div>
 
         {mode === 'original' ? (
           <>
-            {/* 加载示例模型按钮 */}
-            <div className="control-group">
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  className="sample-button"
-                  onClick={() => setObjFile('./bow_tie_small.obj')}
-                  style={{ flex: '1 1 45%' }}
-                >
-                  Bow Tie
-                </button>
-                <button
-                  type="button"
-                  className="sample-button"
-                  onClick={() => setObjFile('./trinity.obj')}
-                  style={{ flex: '1 1 45%' }}
-                >
-                  Trinity
-                </button>
-                <button
-                  type="button"
-                  className="sample-button"
-                  onClick={() => setObjFile('./Morpheus.obj')}
-                  style={{ flex: '1 1 45%' }}
-                >
-                  Morpheus
-                </button>
-                <button
-                  type="button"
-                  className="sample-button"
-                  onClick={() => setObjFile('./Webber Edge.obj')}
-                  style={{ flex: '1 1 45%' }}
-                >
-                  Webber Edge
-                </button>
+            {/* Subdivision Level - Only show for Trinity or in debug mode */}
+            {(debugMode || objFile === './trinity.obj') && (
+              <div className="control-group" style={{ marginTop: '16px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600' }}>
+                  Subdivision Level: <span className="value">{subdivisionLevel}</span>
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="3"
+                  step="1"
+                  value={subdivisionLevel}
+                  onChange={(e) => setSubdivisionLevel(parseInt(e.target.value))}
+                  className="slider"
+                />
+                <div className="slider-labels">
+                  <span>0</span>
+                  <span>1</span>
+                  <span>2</span>
+                  <span>3</span>
+                </div>
               </div>
-              {objFile && <p className="file-status">✓ {objFile.split('/').pop()}</p>}
-            </div>
+            )}
 
-            {/* Subdivision Level */}
-            <div className="control-group">
-              <label style={{ fontSize: '15px', fontWeight: '600' }}>
-                Subdivision Level: <span className="value">{subdivisionLevel}</span>
-              </label>
-              <input
-                type="range"
-                min="0"
-                max="3"
-                step="1"
-                value={subdivisionLevel}
-                onChange={(e) => setSubdivisionLevel(parseInt(e.target.value))}
-                className="slider"
-              />
-              <div className="slider-labels">
-                <span>0</span>
-                <span>1</span>
-                <span>2</span>
-                <span>3</span>
-              </div>
-            </div>
-
-            {/* Ratio 滑动条 */}
+            {/* Scale X Slider */}
             <div className="control-group">
               <label>
-                Width Ratio: <span className="value">{ratio.toFixed(2)}</span>
+                Scale X: <span className="value">{scaleX.toFixed(2)}</span>
               </label>
               <input
                 type="range"
                 min="0.5"
                 max="1.5"
                 step="0.01"
-                value={ratio}
-                onChange={(e) => setRatio(parseFloat(e.target.value))}
+                value={scaleX}
+                onChange={(e) => setScaleX(parseFloat(e.target.value))}
                 className="slider"
               />
               <div className="slider-labels">
@@ -303,7 +348,82 @@ function App() {
               </div>
             </div>
 
-            {/* Twist 滑动条 */}
+            {/* Scale Y Slider */}
+            <div className="control-group">
+              <label>
+                Scale Y: <span className="value">{scaleY.toFixed(2)}</span>
+              </label>
+              <input
+                type="range"
+                min="0.5"
+                max="1.5"
+                step="0.01"
+                value={scaleY}
+                onChange={(e) => setScaleY(parseFloat(e.target.value))}
+                className="slider"
+              />
+              <div className="slider-labels">
+                <span>0.5</span>
+                <span>1.0</span>
+                <span>1.5</span>
+              </div>
+            </div>
+
+            {/* Scale Z Slider */}
+            <div className="control-group">
+              <label>
+                Scale Z: <span className="value">{scaleZ.toFixed(2)}</span>
+              </label>
+              <input
+                type="range"
+                min="0.5"
+                max="1.5"
+                step="0.01"
+                value={scaleZ}
+                onChange={(e) => setScaleZ(parseFloat(e.target.value))}
+                className="slider"
+              />
+              <div className="slider-labels">
+                <span>0.5</span>
+                <span>1.0</span>
+                <span>1.5</span>
+              </div>
+            </div>
+
+            {/* Flat/Botai Toggle - Only show for Morpheus in non-debug mode */}
+            {!debugMode && objFile === './Morpheus.obj' && (
+              <div className="control-group" style={{ marginTop: '16px' }}>
+                <label style={{ fontSize: '12px', fontWeight: '600' }}>Style:</label>
+                <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+                  <button
+                    type="button"
+                    className="sample-button"
+                    onClick={() => setTwist(0)}
+                    style={{
+                      background: twist === 0 ? '#000' : '#f5f5f5',
+                      color: twist === 0 ? '#fff' : '#000',
+                      flex: '1 1 45%'
+                    }}
+                  >
+                    Flat
+                  </button>
+                  <button
+                    type="button"
+                    className="sample-button"
+                    onClick={() => setTwist(90)}
+                    style={{
+                      background: twist === 90 ? '#000' : '#f5f5f5',
+                      color: twist === 90 ? '#fff' : '#000',
+                      flex: '1 1 45%'
+                    }}
+                  >
+                    Botai
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Twist Slider - Always visible */}
             <div className="control-group">
               <label>
                 Twist: <span className="value">{twist}°</span>
@@ -324,46 +444,48 @@ function App() {
               </div>
             </div>
 
-            {/* Boolean Subtraction Toggle */}
-            <div className="control-group">
-              <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-                <input
-                  type="checkbox"
-                  checked={booleanSubtract}
-                  onChange={(e) => setBooleanSubtract(e.target.checked)}
-                  style={{ width: '20px', height: '20px', cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: '15px', fontWeight: '600' }}>Boolean Subtract Text</span>
-              </label>
-            </div>
+            {/* Inscription - Only show for Morpheus or in debug mode */}
+            {(debugMode || objFile === './Morpheus.obj') && (
+              <>
+                <div className="control-group" style={{ marginTop: '20px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={booleanSubtract}
+                      onChange={(e) => setBooleanSubtract(e.target.checked)}
+                      style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: '12px', fontWeight: '600' }}>Inscription</span>
+                  </label>
+                </div>
 
-            {/* Text Input for Boolean Subtraction */}
+            {/* Text Input for Inscription */}
             {booleanSubtract && (
               <>
                 <div className="control-group">
-                  <label style={{ fontSize: '15px', fontWeight: '600' }}>
-                    Subtract Text:
+                  <label style={{ fontSize: '12px', fontWeight: '600' }}>
+                    Inscription Text:
                   </label>
                   <input
                     type="text"
                     value={subtractText}
-                    onChange={(e) => setSubtractText(e.target.value.toUpperCase())}
-                    placeholder="Enter text (e.g., HELLO)"
+                    onChange={(e) => setSubtractText(e.target.value)}
+                    placeholder="Enter text (e.g., Botai)"
                     maxLength="10"
                     style={{
                       width: '100%',
-                      padding: '10px',
-                      fontSize: '16px',
+                      padding: '8px',
+                      fontSize: '13px',
                       border: '2px solid #ddd',
                       borderRadius: '4px',
-                      marginTop: '5px',
+                      marginTop: '4px',
                     }}
                   />
                 </div>
 
                 {/* Font Selection */}
                 <div className="control-group">
-                  <label style={{ fontSize: '15px', fontWeight: '600' }}>
+                  <label style={{ fontSize: '12px', fontWeight: '600' }}>
                     Font:
                   </label>
                   <select
@@ -371,11 +493,11 @@ function App() {
                     onChange={(e) => setTextFont(e.target.value)}
                     style={{
                       width: '100%',
-                      padding: '10px',
-                      fontSize: '16px',
+                      padding: '8px',
+                      fontSize: '13px',
                       border: '2px solid #ddd',
                       borderRadius: '4px',
-                      marginTop: '5px',
+                      marginTop: '4px',
                     }}
                   >
                     <option value="helvetiker">Helvetiker Bold</option>
@@ -517,26 +639,43 @@ function App() {
                   </div>
                 </div>
 
-                {/* Show Text Toggle */}
-                <div className="control-group">
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={showText}
-                      onChange={(e) => setShowText(e.target.checked)}
-                      style={{ width: '20px', height: '20px', cursor: 'pointer' }}
-                    />
-                    <span style={{ fontSize: '15px', fontWeight: '600' }}>Show Text Preview</span>
-                  </label>
-                </div>
+                {/* Show Inscription Preview - Only show in debug mode */}
+                {debugMode && (
+                  <div className="control-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={showText}
+                        onChange={(e) => setShowText(e.target.checked)}
+                        style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '12px', fontWeight: '600' }}>Show Inscription Preview</span>
+                    </label>
+                  </div>
+                )}
               </>
             )}
+              </>
+            )}
+
+            {/* Advanced Rendering Toggle */}
+            <div className="control-group" style={{ marginTop: '20px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={useAdvancedRendering}
+                  onChange={(e) => setUseAdvancedRendering(e.target.checked)}
+                  style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: '12px', fontWeight: '600' }}>Advanced Rendering</span>
+              </label>
+            </div>
           </>
         ) : (
           <>
             {/* Subdivision Level */}
-            <div className="control-group">
-              <label style={{ fontSize: '15px', fontWeight: '600' }}>
+            <div className="control-group" style={{ marginTop: '16px' }}>
+              <label style={{ fontSize: '12px', fontWeight: '600' }}>
                 Subdivision Level: <span className="value">{subdivisionLevel}</span>
               </label>
               <input
@@ -562,8 +701,8 @@ function App() {
         <div style={{ flex: 1 }}></div>
 
         {/* 邮箱输入 */}
-        <div className="control-group">
-          <label style={{ fontSize: '15px', fontWeight: '600' }}>Email Address:</label>
+        <div className="control-group" style={{ marginTop: '20px' }}>
+          <label style={{ fontSize: '12px', fontWeight: '600' }}>Email Address:</label>
           <input
             type="email"
             placeholder="your@email.com"
@@ -577,9 +716,9 @@ function App() {
         <div className="price-display">
           <h2>Price: ${price}</h2>
           <p className="price-note">
-            {ratio === 1.0 
-              ? 'Standard Ratio - Base Price' 
-              : `Deviation ${Math.abs(ratio - 1).toFixed(2)} - Add $${(Math.abs(ratio - 1) * 50).toFixed(2)}`
+            {scaleX === 1.0 && scaleY === 1.0 && scaleZ === 1.0
+              ? 'Standard Size (1.0×1.0×1.0) - Base Price' 
+              : `Volume: ${(scaleX * scaleY * scaleZ).toFixed(2)} (${scaleX.toFixed(2)}×${scaleY.toFixed(2)}×${scaleZ.toFixed(2)})`
             }
           </p>
         </div>
@@ -598,8 +737,8 @@ function App() {
       <div className="canvas-container" style={{ position: 'relative' }}>
         {webglSupported ? (
           <>
-          <Canvas
-            gl={{
+            <Canvas
+              gl={{
               antialias: true,
               alpha: false,
               powerPreference: 'high-performance',
@@ -610,12 +749,15 @@ function App() {
             }}
           >
             <PerspectiveCamera makeDefault position={[0, 0, 5]} />
+            <CameraController twist={twist} />
             <OrbitControls 
               enableZoom={true}
               enablePan={true}
               enableRotate={true}
               minDistance={1}
               maxDistance={20}
+              enableDamping={true}
+              dampingFactor={0.9}
             />
             <ambientLight intensity={0.6} />
             <directionalLight position={[10, 10, 5]} intensity={1} />
@@ -625,9 +767,11 @@ function App() {
               objFile ? (
                 <ModelViewer 
                   objUrl={objFile} 
-                  ratio={ratio}
+                  scaleX={scaleX}
+                  scaleY={scaleY}
+                  scaleZ={scaleZ}
                   twist={twist}
-                  booleanSubtract={booleanSubtract}
+                  booleanSubtract={debugMode || objFile === './Morpheus.obj' ? booleanSubtract : false}
                   subtractText={subtractText}
                   textFont={textFont}
                   textScale={textScale}
@@ -637,7 +781,7 @@ function App() {
                   textDepth={textDepth}
                   textRotation={textRotation}
                   showText={showText}
-                  subdivisionLevel={subdivisionLevel}
+                  subdivisionLevel={debugMode || objFile === './trinity.obj' ? subdivisionLevel : 0}
                   onGeometryReady={(geometry) => setCurrentGeometry(geometry)}
                 />
               ) : (
@@ -659,7 +803,19 @@ function App() {
               />
             )}
             
-            <gridHelper args={[10, 10]} />
+            {debugMode && <gridHelper args={[10, 10]} />}
+            
+            {useAdvancedRendering && (
+              <EffectComposer>
+                {useN8AO && (
+                  <>
+                    <N8AO aoRadius={0.15} intensity={4} distanceFalloff={2} />
+                    {/* <BrightnessContrast brightness={0.1} contrast={0.25} /> */}
+                  </>
+                )}
+                {/* {useToneMapping && <ToneMapping />} */}
+              </EffectComposer>
+            )}
           </Canvas>
           </>
         ) : (
