@@ -174,7 +174,7 @@ function App() {
     <div className="app-container">
       {/* 左侧控制面板 */}
       <div className="control-panel">
-        <img src="/Botai_Logo.svg" alt="Botai" style={{ width: '120px', marginBottom: '20px' }} />
+        <img src="./Botai_Logo.svg" alt="Botai" style={{ width: '120px', marginBottom: '20px' }} />
         
         {/* Mode Toggle */}
         <div className="control-group">
@@ -227,7 +227,7 @@ function App() {
                 <button
                   type="button"
                   className="sample-button"
-                  onClick={() => setObjFile('/bow_tie_small.obj')}
+                  onClick={() => setObjFile('./bow_tie_small.obj')}
                   style={{ flex: '1 1 45%' }}
                 >
                   Bow Tie
@@ -235,7 +235,7 @@ function App() {
                 <button
                   type="button"
                   className="sample-button"
-                  onClick={() => setObjFile('/trinity.obj')}
+                  onClick={() => setObjFile('./trinity.obj')}
                   style={{ flex: '1 1 45%' }}
                 >
                   Trinity
@@ -243,7 +243,7 @@ function App() {
                 <button
                   type="button"
                   className="sample-button"
-                  onClick={() => setObjFile('/Morpheus.obj')}
+                  onClick={() => setObjFile('./Morpheus.obj')}
                   style={{ flex: '1 1 45%' }}
                 >
                   Morpheus
@@ -251,7 +251,7 @@ function App() {
                 <button
                   type="button"
                   className="sample-button"
-                  onClick={() => setObjFile('/Webber Edge.obj')}
+                  onClick={() => setObjFile('./Webber Edge.obj')}
                   style={{ flex: '1 1 45%' }}
                 >
                   Webber Edge
