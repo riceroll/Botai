@@ -5,7 +5,7 @@ import { EffectComposer, N8AO, BrightnessContrast, ToneMapping } from '@react-th
 import ModelViewer from './ModelViewer';
 import CatmullClarkCube from './CatmullClarkCube';
 import RandomGraphMesh from './RandomGraphMesh';
-import { exportAndUploadGeometry } from './utils/objExporter';
+import { exportAndUploadGeometry, uploadToGoogleDrive } from './utils/objExporter';
 import './App.css';
 
 // Component to update camera position based on twist
@@ -66,6 +66,7 @@ function App() {
   const [twist, setTwist] = useState(0); // 扭曲角度 (degrees)
   const [booleanSubtract, setBooleanSubtract] = useState(false); // Inscription toggle
   const [subtractText, setSubtractText] = useState('Botai.'); // Inscription text
+  const [localSubtractText, setLocalSubtractText] = useState('Botai.'); // Local input state
   const [textFont, setTextFont] = useState('helvetiker'); // Font selection
   const [textScale, setTextScale] = useState(0.09); // Text scale (0.1 to 0.5)
   const [textSpacing, setTextSpacing] = useState(0.3); // Text spacing multiplier (0.5 to 2.0)
@@ -86,6 +87,14 @@ function App() {
   const [useN8AO, setUseN8AO] = useState(true); // Enable N8AO ambient occlusion
   const [useToneMapping, setUseToneMapping] = useState(true); // Enable tone mapping
 
+  // Check for offline parameter in URL
+  const [offlineMode, setOfflineMode] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('offline') === 'true';
+  });
+  const [confirmationNumber, setConfirmationNumber] = useState(null);
+  const fileInputRef = useRef(null);
+
   const price = calculatePrice(scaleX, scaleY, scaleZ);
 
   // 检测浏览器是否支持 WebGL（在 mount 时运行一次）
@@ -96,7 +105,7 @@ function App() {
         return !!(
           canvas.getContext('webgl2') ||
           canvas.getContext('webgl') ||
-          canvas.getContext('experimental-webgl')
+          canvas.getContext('experimental-web-gl')
         );
       } catch (e) {
         return false;
@@ -117,7 +126,7 @@ function App() {
 
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const filename = `${mode}_mesh_${timestamp}.obj`;
+      const filename = `${mode}_mesh_${timestamp}.stl`;
       
       const result = await exportAndUploadGeometry(currentGeometry, filename);
       
@@ -132,7 +141,7 @@ function App() {
 
   // 处理订单
   const handleOrder = async () => {
-    if (!email || !email.includes('@')) {
+    if (!offlineMode && (!email || !email.includes('@'))) {
       alert('Please enter a valid email address');
       return;
     }
@@ -140,75 +149,164 @@ function App() {
     setIsOrdering(true);
 
     try {
-      // 生成 GUID
-      const guid = generateGUID();
-      const confirmationNumber = guid.substring(0, 8);
+      let currentConfirmationNumber = confirmationNumber;
       
-      // 构建产品名称
-      const productName = `Custom 3D Product-${confirmationNumber}`;
-      
-      console.log('Creating Order:', {
-        guid,
-        productName,
-        scaleX,
-        scaleY,
-        scaleZ,
-        price,
-        email
-      });
-
-      // Export to Google Drive with confirmation number in filename (if geometry available)
-      if (currentGeometry) {
-        console.log('📤 Exporting to Google Drive...');
-        const filename = `order_${confirmationNumber}_${mode}_mesh.obj`;
+      if (!offlineMode) {
+        // Online mode: Generate new confirmation number
+        const guid = generateGUID();
+        currentConfirmationNumber = guid.substring(0, 8);
+        setConfirmationNumber(currentConfirmationNumber);
         
-        try {
-          await exportAndUploadGeometry(currentGeometry, filename);
-          console.log('✅ Export to Google Drive successful');
-        } catch (exportError) {
-          console.error('⚠️ Export failed but continuing with order:', exportError);
+        // 构建产品名称
+        const productName = `Custom 3D Product-${currentConfirmationNumber}`;
+        
+        console.log('Creating Order:', {
+          guid,
+          productName,
+          scaleX,
+          scaleY,
+          scaleZ,
+          price,
+          email
+        });
+
+        // Upload Settings JSON
+        const settings = {
+            scaleX, scaleY, scaleZ,
+            twist, booleanSubtract, subtractText,
+            textFont, textScale, textSpacing,
+            textOffsetX, textOffsetY, textDepth, textRotation,
+            mode, objFile, email,
+            confirmationNumber: currentConfirmationNumber,
+            timestamp: new Date().toISOString()
+        };
+        console.log('📤 Uploading settings JSON...');
+        await uploadToGoogleDrive(JSON.stringify(settings, null, 2), `order_${currentConfirmationNumber}_settings.json`);
+
+        // Export to Google Drive with confirmation number in filename (if geometry available)
+        if (currentGeometry) {
+            console.log('📤 Exporting to Google Drive...');
+            const filename = `order_${currentConfirmationNumber}_${mode}_mesh.stl`;
+            
+            try {
+            await exportAndUploadGeometry(currentGeometry, filename);
+            console.log('✅ Export to Google Drive successful');
+            } catch (exportError) {
+            console.error('⚠️ Export failed but continuing with order:', exportError);
+            }
+        } else {
+            console.log('⚠️ No geometry available to export, skipping...');
+        }
+
+        // 调用你的 Vercel API
+        const apiUrl = new URL('https://shopify-draft-order-io3s5gd2e-ricerolls-projects.vercel.app/api/create-order');
+        apiUrl.searchParams.append('productName', productName);
+        apiUrl.searchParams.append('price', price);
+        apiUrl.searchParams.append('email', email);
+        
+        console.log('API URL:', apiUrl.toString());
+
+        const response = await fetch(apiUrl.toString(), {
+            method: 'GET',
+            headers: {
+            'Content-Type': 'application/json',
+            }
+        });
+
+        if (!response.ok) {
+            const errorText = await response.text();
+            console.error('API Error Response:', errorText);
+            throw new Error(`API Request Failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+        console.log('API Response:', data);
+        
+        // 获取 Shopify URL 并跳转
+        if (data.checkoutUrl) {
+            console.log('Redirecting to Shopify:', data.checkoutUrl);
+            window.location.href = data.checkoutUrl;
+        } else {
+            throw new Error('Failed to get Shopify URL');
         }
       } else {
-        console.log('⚠️ No geometry available to export, skipping...');
-      }
-
-      // 调用你的 Vercel API
-      const apiUrl = new URL('https://shopify-draft-order-io3s5gd2e-ricerolls-projects.vercel.app/api/create-order');
-      apiUrl.searchParams.append('productName', productName);
-      apiUrl.searchParams.append('price', price);
-      apiUrl.searchParams.append('email', email);
-      
-      console.log('API URL:', apiUrl.toString());
-
-      const response = await fetch(apiUrl.toString(), {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
+        // Offline Mode
+        if (!currentConfirmationNumber) {
+            // Generate a temporary confirmation number if none exists (e.g. testing without loading JSON)
+            const guid = generateGUID();
+            currentConfirmationNumber = "OFFLINE-" + guid.substring(0, 8);
+            console.log("⚠️ No confirmation number found. Using generated one:", currentConfirmationNumber);
         }
-      });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('API Error Response:', errorText);
-        throw new Error(`API Request Failed: ${response.status}`);
-      }
-
-      const data = await response.json();
-      console.log('API Response:', data);
-      
-      // 获取 Shopify URL 并跳转
-      if (data.checkoutUrl) {
-        console.log('Redirecting to Shopify:', data.checkoutUrl);
-        window.location.href = data.checkoutUrl;
-      } else {
-        throw new Error('Failed to get Shopify URL');
+        if (currentGeometry) {
+            console.log('📤 Exporting to Google Drive (Offline Mode)...');
+            // Use same confirmation number
+            const filename = `order_${currentConfirmationNumber}_${mode}_offline_mesh.stl`;
+            
+            await exportAndUploadGeometry(currentGeometry, filename);
+            console.log('✅ Export to Google Drive successful');
+            alert(`Upload successful!\nFile: ${filename}`);
+        } else {
+            alert("No geometry to upload.");
+        }
+        
+        setIsOrdering(false);
       }
 
     } catch (error) {
-      console.error('Order Creation Failed:', error);
-      alert('Order creation failed: ' + error.message);
+      console.error('Order/Upload Failed:', error);
+      alert('Operation failed: ' + error.message);
       setIsOrdering(false);
     }
+  };
+
+  const handleLoadJson = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const settings = JSON.parse(e.target.result);
+        
+        if (settings.scaleX) setScaleX(settings.scaleX);
+        if (settings.scaleY) setScaleY(settings.scaleY);
+        if (settings.scaleZ) setScaleZ(settings.scaleZ);
+        if (settings.twist !== undefined) setTwist(settings.twist);
+        if (settings.booleanSubtract !== undefined) setBooleanSubtract(settings.booleanSubtract);
+        if (settings.subtractText) setSubtractText(settings.subtractText);
+        if (settings.textFont) setTextFont(settings.textFont);
+        if (settings.textScale) setTextScale(settings.textScale);
+        if (settings.textSpacing) setTextSpacing(settings.textSpacing);
+        if (settings.textOffsetX) setTextOffsetX(settings.textOffsetX);
+        if (settings.textOffsetY) setTextOffsetY(settings.textOffsetY);
+        if (settings.textDepth) setTextDepth(settings.textDepth);
+        if (settings.textRotation) setTextRotation(settings.textRotation);
+        if (settings.mode) setMode(settings.mode);
+        if (settings.email) setEmail(settings.email);
+        if (settings.confirmationNumber) setConfirmationNumber(settings.confirmationNumber);
+
+        if (offlineMode && settings.objFile) {
+           // Always use the standard file path (which is now the high-res one for Morpheus)
+           // If the JSON saved a specific file path, we might want to respect it, 
+           // but for Morpheus we want to ensure we use the current "Morpheus.obj"
+           if (settings.objFile.includes('Morpheus')) {
+               setObjFile('./Morpheus.obj');
+           } else {
+               setObjFile(settings.objFile);
+           }
+        } else if (settings.objFile) {
+           setObjFile(settings.objFile);
+        }
+        
+        alert("Settings loaded successfully!");
+
+      } catch (error) {
+        console.error("Error parsing JSON:", error);
+        alert("Invalid JSON file");
+      }
+    };
+    reader.readAsText(file);
   };
 
   return (
@@ -254,8 +352,8 @@ function App() {
               className="sample-button"
               onClick={() => { setObjFile('./bow_tie_small.obj'); setMode('original'); }}
               style={{
-                background: mode === 'original' && objFile === './bow_tie_small.obj' ? '#000' : '#f5f5f5',
-                color: mode === 'original' && objFile === './bow_tie_small.obj' ? '#fff' : '#000',
+                background: mode === 'original' && objFile.includes('bow_tie_small') ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile.includes('bow_tie_small') ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
@@ -266,8 +364,8 @@ function App() {
               className="sample-button"
               onClick={() => { setObjFile('./trinity.obj'); setMode('original'); }}
               style={{
-                background: mode === 'original' && objFile === './trinity.obj' ? '#000' : '#f5f5f5',
-                color: mode === 'original' && objFile === './trinity.obj' ? '#fff' : '#000',
+                background: mode === 'original' && objFile.includes('trinity') ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile.includes('trinity') ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
@@ -278,8 +376,8 @@ function App() {
               className="sample-button"
               onClick={() => { setObjFile('./Morpheus.obj'); setMode('original'); }}
               style={{
-                background: mode === 'original' && objFile === './Morpheus.obj' ? '#000' : '#f5f5f5',
-                color: mode === 'original' && objFile === './Morpheus.obj' ? '#fff' : '#000',
+                background: mode === 'original' && objFile.includes('Morpheus') ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile.includes('Morpheus') ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
@@ -290,8 +388,8 @@ function App() {
               className="sample-button"
               onClick={() => { setObjFile('./Webber Edge.obj'); setMode('original'); }}
               style={{
-                background: mode === 'original' && objFile === './Webber Edge.obj' ? '#000' : '#f5f5f5',
-                color: mode === 'original' && objFile === './Webber Edge.obj' ? '#fff' : '#000',
+                background: mode === 'original' && objFile.includes('Webber Edge') ? '#000' : '#f5f5f5',
+                color: mode === 'original' && objFile.includes('Webber Edge') ? '#fff' : '#000',
                 flex: '1 1 45%'
               }}
             >
@@ -301,10 +399,12 @@ function App() {
           {mode === 'original' && objFile && <p className="file-status">✓ {objFile.split('/').pop()}</p>}
         </div>
 
+        {/* High Resolution Toggle - Removed as we always use high res now */}
+        
         {mode === 'original' ? (
           <>
-            {/* Subdivision Level - Only show for Trinity or in debug mode */}
-            {(debugMode || objFile === './trinity.obj') && (
+            {/* Subdivision Level - Only show for Trinity or in debug mode or offline mode */}
+            {(debugMode || offlineMode || objFile === './trinity.obj') && (
               <div className="control-group" style={{ marginTop: '16px' }}>
                 <label style={{ fontSize: '12px', fontWeight: '600' }}>
                   Subdivision Level: <span className="value">{subdivisionLevel}</span>
@@ -391,7 +491,7 @@ function App() {
             </div>
 
             {/* Flat/Botai Toggle - Only show for Morpheus in non-debug mode */}
-            {!debugMode && objFile === './Morpheus.obj' && (
+            {!debugMode && objFile && objFile.includes('Morpheus') && (
               <div className="control-group" style={{ marginTop: '16px' }}>
                 <label style={{ fontSize: '12px', fontWeight: '600' }}>Style:</label>
                 <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
@@ -445,7 +545,7 @@ function App() {
             </div>
 
             {/* Inscription - Only show for Morpheus or in debug mode */}
-            {(debugMode || objFile === './Morpheus.obj') && (
+            {(debugMode || (objFile && objFile.includes('Morpheus'))) && (
               <>
                 <div className="control-group" style={{ marginTop: '20px' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
@@ -468,10 +568,17 @@ function App() {
                   </label>
                   <input
                     type="text"
-                    value={subtractText}
-                    onChange={(e) => setSubtractText(e.target.value)}
+                    value={localSubtractText}
+                    onChange={(e) => setLocalSubtractText(e.target.value)}
+                    onBlur={() => setSubtractText(localSubtractText)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        setSubtractText(localSubtractText);
+                        e.target.blur();
+                      }
+                    }}
                     placeholder="Enter text (e.g., Botai)"
-                    maxLength="10"
+                    maxLength="50"
                     style={{
                       width: '100%',
                       padding: '8px',
@@ -701,6 +808,7 @@ function App() {
         <div style={{ flex: 1 }}></div>
 
         {/* 邮箱输入 */}
+        {!offlineMode && (
         <div className="control-group" style={{ marginTop: '20px' }}>
           <label style={{ fontSize: '12px', fontWeight: '600' }}>Email Address:</label>
           <input
@@ -711,6 +819,7 @@ function App() {
             className="email-input"
           />
         </div>
+        )}
 
         {/* 价格显示 */}
         <div className="price-display">
@@ -723,14 +832,60 @@ function App() {
           </p>
         </div>
 
-        {/* Order 按钮 */}
+        {/* Offline Mode Controls */}
+        {offlineMode && (
+            <div className="control-group" style={{ marginTop: '10px' }}>
+                <input
+                    type="file"
+                    accept=".json"
+                    ref={fileInputRef}
+                    style={{ display: 'none' }}
+                    onChange={handleLoadJson}
+                />
+                <button
+                    className="sample-button"
+                    onClick={() => fileInputRef.current.click()}
+                    style={{ width: '100%', marginBottom: '10px', background: '#333', color: 'white' }}
+                >
+                    Load Settings JSON
+                </button>
+                {confirmationNumber && (
+                    <div style={{ fontSize: '12px', marginBottom: '10px', color: 'green' }}>
+                        Loaded Order: {confirmationNumber}
+                    </div>
+                )}
+            </div>
+        )}
+
+        {/* Order/Upload 按钮 */}
         <button
           className="order-button"
           onClick={handleOrder}
-          disabled={isOrdering || !email}
+          disabled={isOrdering || (!offlineMode && !email)}
         >
-          {isOrdering ? 'Processing & Uploading...' : 'Order Now & Save to Drive'}
+          {isOrdering ? 'Processing & Uploading...' : (offlineMode ? 'Upload Mesh' : 'Order Now ')}
         </button>
+
+        {/* Load JSON Settings - Only show in debug mode */}
+        {debugMode && (
+          <div className="control-group" style={{ marginTop: '20px' }}>
+            <label style={{ fontSize: '12px', fontWeight: '600' }}>Load Settings (JSON):</label>
+            <input
+              type="file"
+              accept=".json"
+              onChange={handleLoadJson}
+              ref={fileInputRef}
+              style={{
+                width: '100%',
+                padding: '8px',
+                fontSize: '13px',
+                border: '2px solid #ddd',
+                borderRadius: '4px',
+                marginTop: '4px',
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* 右侧 3D 查看器 */}
@@ -771,7 +926,7 @@ function App() {
                   scaleY={scaleY}
                   scaleZ={scaleZ}
                   twist={twist}
-                  booleanSubtract={debugMode || objFile === './Morpheus.obj' ? booleanSubtract : false}
+                  booleanSubtract={debugMode || (objFile && objFile.includes('Morpheus')) ? booleanSubtract : false}
                   subtractText={subtractText}
                   textFont={textFont}
                   textScale={textScale}
@@ -781,7 +936,7 @@ function App() {
                   textDepth={textDepth}
                   textRotation={textRotation}
                   showText={showText}
-                  subdivisionLevel={debugMode || objFile === './trinity.obj' ? subdivisionLevel : 0}
+                  subdivisionLevel={debugMode || offlineMode || objFile === './trinity.obj' ? subdivisionLevel : 0}
                   onGeometryReady={(geometry) => setCurrentGeometry(geometry)}
                 />
               ) : (
@@ -850,26 +1005,35 @@ function App() {
             zIndex: 1000,
             gap: '20px'
           }}>
+            <div className="upload-icon">
+              <svg 
+                width="32" 
+                height="32" 
+                viewBox="0 0 24 24" 
+                fill="none" 
+                stroke="white" 
+                strokeWidth="2" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                className="upload-arrow-svg"
+              >
+                <line x1="12" y1="19" x2="12" y2="5"></line>
+                <polyline points="5 12 12 5 19 12"></polyline>
+              </svg>
+            </div>
             <div style={{
               fontSize: '24px',
-              fontWeight: 'bold'
+              fontWeight: 'bold',
+              marginTop: '10px'
             }}>
-              📤 Uploading Model to Google Drive...
+              Uploading your design...
             </div>
             <div style={{
               fontSize: '16px',
               opacity: 0.8
             }}>
-              Please wait while we save your model
+
             </div>
-            <div style={{
-              width: '50px',
-              height: '50px',
-              border: '4px solid rgba(255, 255, 255, 0.3)',
-              borderTop: '4px solid white',
-              borderRadius: '50%',
-              animation: 'spin 1s linear infinite'
-            }}></div>
           </div>
         )}
       </div>

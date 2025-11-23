@@ -31,6 +31,24 @@ function applyBooleanSubtraction(geometry, text, font, textScale, textSpacing, t
   
   console.log('🔲 Bounding box:', { center, size });
   
+  // Ensure geometry has necessary attributes for CSG
+  if (!geometry.attributes.uv) {
+    console.log('⚠️ Geometry missing UVs, adding dummy UVs for CSG compatibility');
+    const count = geometry.attributes.position.count;
+    const uvs = new Float32Array(count * 2);
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  }
+
+  // Clean up attributes to ensure only standard ones exist (position, normal, uv)
+  // This prevents "undefined is not an object (evaluating 'aAttr.array')" errors in three-bvh-csg
+  const allowedAttributes = ['position', 'normal', 'uv'];
+  for (const name in geometry.attributes) {
+    if (!allowedAttributes.includes(name)) {
+      console.log(`⚠️ Removing non-standard attribute '${name}' for CSG compatibility`);
+      geometry.deleteAttribute(name);
+    }
+  }
+  
   // Create brush from base geometry
   const baseBrush = new Brush(geometry);
   baseBrush.updateMatrixWorld();
@@ -54,6 +72,14 @@ function applyBooleanSubtraction(geometry, text, font, textScale, textSpacing, t
   
   for (let i = 0; i < numChars; i++) {
     const char = text[i];
+    
+    if (char === ' ') {
+      const spaceWidth = textHeight * 0.5;
+      charData.push({ char, width: spaceWidth, geometry: null });
+      totalTextWidth += spaceWidth;
+      continue;
+    }
+
     const tempGeom = new TextGeometry(char, {
       font: font,
       size: textHeight,
@@ -87,6 +113,19 @@ function applyBooleanSubtraction(geometry, text, font, textScale, textSpacing, t
   for (let i = 0; i < numChars; i++) {
     const { char, width, geometry: textGeom } = charData[i];
     
+    // Skip boolean subtraction for spaces, but still advance position
+    if (char === ' ') {
+      currentX += width + spacingGap;
+      continue;
+    }
+
+    // Ensure text geometry only has standard attributes
+    for (const name in textGeom.attributes) {
+      if (!allowedAttributes.includes(name)) {
+        textGeom.deleteAttribute(name);
+      }
+    }
+
     // Calculate local position relative to origin (before rotation)
     const localX = currentX;
     const localY = 0;
@@ -281,7 +320,7 @@ function ModelViewer({
         setObj(loadedObject);
       },
       (progress) => {
-        console.log('Loading:', Math.round((progress.loaded / progress.total) * 100) + '%');
+        console.log('Loading:', Math.round((progress.loaded / progress.total) + '%'));
       },
       (err) => {
         console.error('OBJ 加载失败:', err);
